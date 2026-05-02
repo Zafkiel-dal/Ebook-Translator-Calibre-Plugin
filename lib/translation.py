@@ -14,6 +14,7 @@ from .utils import log, sep, trim, dummy, traceback_error
 from .config import get_config
 from .exception import TranslationFailed, TranslationCanceled
 from .handler import Handler
+from .token_usage import log_token_usage
 
 
 load_translations()  # type: ignore
@@ -83,10 +84,15 @@ class Translation:
         self.streaming = dummy
         self.callback = dummy
         self.cancel_request = dummy
+        self.book_title = 'Unknown'
 
         self.total = 0
         self.progress_bar = ProgressBar()
         self.abort_count = 0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_thinking_tokens = 0
+        self.total_total_tokens = 0
 
     def set_fresh(self, fresh):
         self.fresh = fresh
@@ -179,6 +185,18 @@ class Translation:
                 temp = ''.join([char for char in translation])
             translation = temp
         translation = self.glossary.restore(translation)
+        
+        # Accumulate usage tokens
+        usage = self.translator.usage_data
+        if usage:
+            it = usage.get('prompt_tokens', 0)
+            ot = usage.get('completion_tokens', 0)
+            tt = usage.get('total_tokens', 0)
+            self.total_input_tokens += it
+            self.total_output_tokens += ot
+            self.total_thinking_tokens += max(0, tt - (it + ot))
+            self.total_total_tokens += tt
+
         paragraph.translation = translation.strip()
         # Apply aligment checking and processing.
         if self.translator.merge_enabled:
@@ -231,11 +249,30 @@ class Translation:
             self.translator.request_interval)
         handler.handle()
 
+        # Log total token usage for the session
+        if self.total_total_tokens > 0:
+            log_token_usage(
+                engine_name=self.translator.name,
+                book_title=self.book_title,
+                model=getattr(self.translator, 'model', 'unknown'),
+                input_tokens=self.total_input_tokens,
+                output_tokens=self.total_output_tokens,
+                total_tokens=self.total_total_tokens,
+                is_batch=self.batch
+            )
+
         self.log(sep())
         if self.batch and self.need_stop():
             raise Exception(_('Translation failed.'))
         consuming = round((time.time() - start_time) / 60, 2)
         self.log(_('Time consuming: {} minutes').format(consuming))
+        if self.total_total_tokens > 0:
+            if self.total_thinking_tokens > 0:
+                self.log(_('Token usage: {} input, {} output, {} thinking, {} total').format(
+                    self.total_input_tokens, self.total_output_tokens, self.total_thinking_tokens, self.total_total_tokens))
+            else:
+                self.log(_('Token usage: {} input, {} output, {} total').format(
+                    self.total_input_tokens, self.total_output_tokens, self.total_total_tokens))
         self.log(_('Translation completed.'))
         self.progress(1, _('Translation completed.'))
 

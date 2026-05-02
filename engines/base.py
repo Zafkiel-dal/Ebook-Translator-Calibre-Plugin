@@ -68,6 +68,7 @@ class Base:
         request_timeout = self.config.get('request_timeout')
         if request_timeout is not None:
             self.request_timeout = request_timeout
+        self.usage_data = {}
         max_error_count = self.config.get('max_error_count')
         if max_error_count is not None:
             self.max_error_count = max_error_count
@@ -193,6 +194,7 @@ class Base:
         return self._get_source_code() == 'auto'
 
     def translate(self, content):
+        self.usage_data = {}
         response = None
         try:
             params = {
@@ -239,7 +241,18 @@ class Base:
         return response
 
     def get_usage(self):
-        return None
+        if not self.usage_data:
+            return None
+        input_tokens = self.usage_data.get('prompt_tokens', 0)
+        output_tokens = self.usage_data.get('completion_tokens', 0)
+        total_tokens = self.usage_data.get('total_tokens', 0)
+        thinking_tokens = max(0, total_tokens - (input_tokens + output_tokens))
+        
+        if thinking_tokens > 0:
+            return _('Token usage: {} input, {} output, {} thinking, {} total') \
+                .format(input_tokens, output_tokens, thinking_tokens, total_tokens)
+        return _('Token usage: {} input, {} output, {} total') \
+            .format(input_tokens, output_tokens, total_tokens)
 
     def allow_raw(self) -> bool:
         """Allow raw content translation only if the engine supports HTML and

@@ -24,6 +24,9 @@ __Plugin Homepage__: [https://translator.bookfere.com](https://translator.bookfe
 * Support to translate more than one ebooks. The translation process of each book is carried out simultaneously without affecting one another
 * Support caching translated content, with no need to re-translate after request failure or network interruption
 * Provide a large number of customization settings, such as saving translated ebooks to Calibre library or designated location
+* **Gemini Batch Translation** — Translate large books at up to 50% lower cost compared to real-time API by using Google Gemini's batch API, with automatic file upload, progress tracking, and token usage logging
+* **Token Usage Tracking** — Monitor input, output, and thinking tokens for Gemini and ChatGPT engines with persistent history to help you understand and optimize your API spending
+* **Google File Manager** — Standalone tool to list and delete uploaded files on Google File API to keep your storage clean (`google_file_manager/google_file_manager.py`)
 
 ---
 

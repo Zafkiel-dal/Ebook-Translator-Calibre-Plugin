@@ -62,6 +62,7 @@ class ChatgptTranslate(GenAI):
         self.top_p = self.config.get('top_p', self.top_p)
         self.stream = self.config.get('stream', self.stream)
         self.model = self.config.get('model', self.model)
+        self.thinking = self.config.get('thinking', self.thinking)
 
     def get_models(self):
         domain_name = '://'.join(urlsplit(self.endpoint or '', 'https')[:2])
@@ -98,6 +99,15 @@ class ChatgptTranslate(GenAI):
                 {'role': 'user', 'content': text}
             ],
         }
+        
+        if self.model and 'deepseek' in self.model.lower():
+            if self.thinking in ('default[disable]', 'default'):
+                body['thinking'] = {'type': 'disabled'}
+            elif self.thinking:
+                body['thinking'] = {'type': 'enabled'}
+                val = 'medium' if self.thinking in ['med', 'meduime'] else self.thinking
+                body['reasoning_effort'] = val
+
         if self.stream:
             body.update(stream=True)
         sampling_value = getattr(self, self.sampling)
@@ -110,6 +120,10 @@ class ChatgptTranslate(GenAI):
         # Parse JSON response with robust schema handling
         try:
             data = json.loads(response)
+            usage = data.get('usage', {})
+            self.usage_data['prompt_tokens'] = usage.get('prompt_tokens', 0)
+            self.usage_data['completion_tokens'] = usage.get('completion_tokens', 0)
+            self.usage_data['total_tokens'] = usage.get('total_tokens', 0)
             # Handle different response schemas
             if 'choices' in data and len(data['choices']) > 0:
                 choice = data['choices'][0]
@@ -176,6 +190,11 @@ class ChatgptTranslate(GenAI):
                             text = choice['text']
                             if text:
                                 yield str(text)
+                    usage = data.get('usage')
+                    if usage:
+                        self.usage_data['prompt_tokens'] = usage.get('prompt_tokens', 0)
+                        self.usage_data['completion_tokens'] = usage.get('completion_tokens', 0)
+                        self.usage_data['total_tokens'] = usage.get('total_tokens', 0)
                 except json.JSONDecodeError:
                     # Skip malformed JSON chunks
                     continue

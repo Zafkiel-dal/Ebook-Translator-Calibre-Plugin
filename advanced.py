@@ -20,11 +20,13 @@ from .lib.translation import get_engine_class, get_translator, get_translation
 from .lib.element import get_element_handler
 from .lib.conversion import extract_item, extra_formats
 from .engines.openai import ChatgptTranslate, ChatgptBatchTranslate
+from .engines.google import GeminiTranslate, GeminiBatchTranslate
 from .engines.custom import CustomTranslate
 from .components import (
     EngineList, Footer, SourceLang, TargetLang, InputFormat, OutputFormat,
     AlertMessage, AdvancedTranslationTable, StatusColor, TranslationStatus,
-    set_shortcut, ChatgptBatchTranslationManager)
+    set_shortcut, ChatgptBatchTranslationManager,
+    GeminiBatchTranslationManager)
 from .components.editor import CodeEditor
 
 
@@ -57,7 +59,7 @@ class PreparationWorker(QObject):
     start = pyqtSignal()
     progress = pyqtSignal(int)
     progress_message = pyqtSignal(str)
-    progress_detail = pyqtSignal(str)
+    progress_detail = pyqtSignal(object)
     close = pyqtSignal(int)
     finished = pyqtSignal(str)
 
@@ -745,16 +747,23 @@ class AdvancedTranslation(QDialog):
 
         self.batch_translation.connect(
             lambda: batch_translation.setVisible(
-                self.current_engine == ChatgptTranslate))
+                self.current_engine in (ChatgptTranslate, GeminiTranslate)))
         self.batch_translation.emit()
 
         def start_batch_translation():
             translator = get_translator(self.current_engine)
             translator.set_source_lang(self.ebook.source_lang)
             translator.set_target_lang(self.ebook.target_lang)
-            batch_translator = ChatgptBatchTranslate(translator)
-            batch = ChatgptBatchTranslationManager(
-                batch_translator, self.cache, self.table, self)
+            if self.current_engine == ChatgptTranslate:
+                batch_translator = ChatgptBatchTranslate(translator)
+                batch = ChatgptBatchTranslationManager(
+                    batch_translator, self.cache, self.table, self)
+            elif self.current_engine == GeminiTranslate:
+                batch_translator = GeminiBatchTranslate(translator)
+                batch = GeminiBatchTranslationManager(
+                    batch_translator, self.cache, self.table, self)
+            else:
+                return
             batch.exec_()
         batch_translation.clicked.connect(start_batch_translation)
 

@@ -1,6 +1,8 @@
 import re
 import os
 import os.path
+import json
+from functools import partial
 
 from qt.core import (  # type: ignore
     Qt, QLabel, QDialog, QWidget, QLineEdit, QPushButton, QPlainTextEdit,
@@ -149,7 +151,7 @@ class TranslationSetting(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # Preferred Method
+        # Preferred Mode
         mode_group = QGroupBox(_('Preferred Mode'))
         mode_layout = QGridLayout(mode_group)
         advanced_mode = QRadioButton(_('Advanced Mode'))
@@ -411,6 +413,63 @@ class TranslationSetting(QDialog):
         manage_engine = QPushButton(_('Custom'))
         engine_layout.addWidget(engine_list, 1)
         engine_layout.addWidget(engine_test)
+        
+        def show_debug_api():
+            try:
+                self.current_engine.set_config(self.get_engine_config())
+                translator = self.current_engine()
+                # Initialize languages to avoid AttributeError during get_body
+                translator.set_source_lang(_('Auto detect'))
+                translator.set_target_lang(self.target_lang.currentText())
+                
+                body = translator.get_body('Hello World!')
+                if isinstance(body, bytes):
+                    body = body.decode('utf-8')
+                try:
+                    # Attempt to parse as JSON if it's a string
+                    if isinstance(body, str):
+                        try:
+                            body = json.loads(body)
+                        except Exception:
+                            pass
+                    
+                    # Pretty print the resulting dict/list or the original object
+                    body = json.dumps(body, indent=4, sort_keys=True, ensure_ascii=False)
+                    # Add extra newline between top-level keys for better spacing
+                    body = body.replace('    "', '\n    "')
+                except Exception:
+                    body = str(body)
+
+                dialog = QDialog(self)
+                dialog.setWindowTitle(_('Debug API'))
+                dialog.setMinimumSize(600, 400)
+                dialog_layout = QVBoxLayout(dialog)
+                text_edit = QPlainTextEdit()
+                text_edit.setReadOnly(True)
+                text_edit.setPlainText(body)
+                # Apply standard theme with padding
+                text_edit.setStyleSheet("padding: 10px;")
+                from qt.core import QFont
+                font = QFont("Consolas", 10)
+                if not font.exactMatch():
+                    font = QFont("Monospace", 10)
+                text_edit.setFont(font)
+                text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+                
+                close_btn = QPushButton(_('Close'))
+                close_btn.clicked.connect(dialog.accept)
+                
+                dialog_layout.addWidget(text_edit, 1)
+                dialog_layout.addWidget(close_btn)
+                dialog.exec()
+            except Exception as e:
+                from .lib.utils import error_dialog
+                error_dialog(self, _('Debug API Error'), str(e), show=True)
+
+        debug_api_btn = QPushButton(_('Debug API'))
+        debug_api_btn.clicked.connect(show_debug_api)
+        engine_layout.addWidget(debug_api_btn)
+
         engine_layout.addWidget(manage_engine)
         layout.addWidget(engine_group)
 
@@ -523,6 +582,7 @@ class TranslationSetting(QDialog):
         sampling_widget = QWidget()
         sampling_layout = QHBoxLayout(sampling_widget)
         sampling_layout.setContentsMargins(0, 0, 0, 0)
+        sampling_btn_group = QButtonGroup()
         temperature = QRadioButton()
         temperature_label = QLabel('temperature')
         temperature_value = QDoubleSpinBox()
@@ -554,12 +614,61 @@ class TranslationSetting(QDialog):
         self.disable_wheel_event(temperature_value)
         self.disable_wheel_event(top_p_value)
 
-        stream_enabled = QCheckBox(_('Enable streaming response'))
-        genai_layout.addRow(_('Stream'), stream_enabled)
-
-        sampling_btn_group = QButtonGroup(sampling_widget)
         sampling_btn_group.addButton(temperature, 0)
         sampling_btn_group.addButton(top_p, 1)
+
+        thinking = QComboBox()
+        thinking.addItems(['default'])
+        genai_layout.addRow(_('Thinking'), thinking)
+
+        # Thinking options differ by model family:
+        # - Gemini 3.x (thinkingLevel): default, minimal, low, medium, high
+        # - Gemini 2.5 (thinkingBudget): default, disable, dynamic
+        # - Older/non-thinking models: default only
+        _thinking_options = {
+            'gemini3': ['default', 'minimal', 'low', 'medium', 'high'],
+            'gemini25': ['default', 'disable', 'dynamic'],
+            'none': ['default'],
+            'other': ['default', 'low', 'medium', 'high'],
+        }
+
+        def _update_thinking_options(model_name):
+            """Update thinking dropdown based on selected model."""
+            old_text = thinking.currentText()
+            try:
+                thinking.currentTextChanged.disconnect()
+            except TypeError:
+                pass
+            thinking.clear()
+            if not model_name or not issubclass(
+                    self.current_engine, GeminiTranslate):
+                opts = _thinking_options['other']
+            elif model_name.startswith('gemini-3'):
+                opts = _thinking_options['gemini3']
+            elif (model_name.startswith('gemini-2.5')
+                  or model_name.startswith('gemini-2.6')):
+                opts = _thinking_options['gemini25']
+            else:
+                # Future models (gemini-4+) — assume thinkingLevel
+                import re as _re
+                m = _re.match(r'gemini-(\d+)', model_name)
+                if m and int(m.group(1)) >= 3:
+                    opts = _thinking_options['gemini3']
+                else:
+                    opts = _thinking_options['none']
+            thinking.addItems(opts)
+            # Restore previous selection if still valid, else default
+            if old_text in opts:
+                thinking.setCurrentText(old_text)
+            else:
+                thinking.setCurrentText('default')
+                self.current_engine.config.update(thinking='default')
+            thinking.currentTextChanged.connect(
+                lambda text: self.current_engine.config
+                .update(thinking=text))
+
+        stream_enabled = QCheckBox(_('Enable streaming response'))
+        genai_layout.addRow(_('Stream'), stream_enabled)
 
         labels = {
             temperature: temperature_label.text(),
@@ -602,10 +711,15 @@ class TranslationSetting(QDialog):
                 if model in models or model == _('Custom'):
                     genai_model_input.clear()
             genai_model_list.currentTextChanged.connect(init_ai_models)
+            # Update thinking dropdown based on selected model
+            if issubclass(self.current_engine, GeminiTranslate):
+                _update_thinking_options(model)
         self.model_worker.finished.connect(init_ai_models)
-        genai_model_input.textChanged.connect(
-            lambda model: self.current_engine.config.update(
-                model=model.strip()))
+        def _on_custom_model_changed(model):
+            self.current_engine.config.update(model=model.strip())
+            if issubclass(self.current_engine, GeminiTranslate):
+                _update_thinking_options(model.strip())
+        genai_model_input.textChanged.connect(_on_custom_model_changed)
 
         def fetch_ai_models():
             try:
@@ -699,10 +813,31 @@ class TranslationSetting(QDialog):
                 top_k_value.valueChanged.connect(
                     lambda value: config.update(top_k=value))
             # Stream
+            # Migrate thinking from old values to new format
+            thinking_val = config.get('thinking', self.current_engine.thinking)
+            if isinstance(thinking_val, bool):
+                thinking_val = 'high' if thinking_val else 'default'
+                config['thinking'] = thinking_val
+            elif thinking_val == 'default[disable]':
+                thinking_val = 'default'
+                config['thinking'] = thinking_val
+            elif thinking_val in ('med', 'meduime'):
+                thinking_val = 'medium'
+                config['thinking'] = thinking_val
+            # Fallback: if value not in dropdown, reset to default
+            thinking_items = [thinking.itemText(i)
+                              for i in range(thinking.count())]
+            if thinking_val not in thinking_items:
+                thinking_val = 'default'
+                config['thinking'] = thinking_val
+            thinking.setCurrentText(thinking_val)
+
             stream_enabled.setChecked(
                 config.get('stream', self.current_engine.stream))
-            stream_enabled.toggled.connect(
-                lambda checked: config.update(stream=checked))
+            # Note: thinking signal is already connected by
+            # _update_thinking_options (called from init_ai_models)
+            stream_enabled.stateChanged.connect(
+                lambda state: config.update(stream=bool(state)))
             genai_group.setVisible(True)
 
         def choose_default_engine(index):

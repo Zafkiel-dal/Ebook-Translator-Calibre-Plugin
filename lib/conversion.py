@@ -158,7 +158,13 @@ def extract_item(input_path, input_format, encoding, callback=None):
         log.outputs = [Stream(PrepareStream(callback))]
     handler = extra_formats.get(input_format)
     extractor = extract_book if handler is None else handler['extractor']
-    return extractor(input_path, encoding)
+    try:
+        return extractor(input_path, encoding)
+    finally:
+        # Restore log outputs to avoid leaking the callback
+        # (e.g. into batch translation logging)
+        if callback is not None:
+            log.outputs = []
 
 
 def extract_book(input_path, encoding):
@@ -220,6 +226,7 @@ def convert_item(
     translation = get_translation(
         translator, lambda text, error=False: log.info(text))
     translation.set_batch(is_batch)
+    translation.book_title = ebook_title
     translation.set_callback(cache.update_paragraph)
 
     debug_info = '{0}\n| Diagnosis Information\n{0}'.format(sep())

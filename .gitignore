@@ -4,3 +4,6 @@
 _site
 *.pyc
 tags
+node_modules/
+Ebook-Translator.zip
+.agents/

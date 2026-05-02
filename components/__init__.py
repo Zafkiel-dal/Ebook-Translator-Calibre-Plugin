@@ -8,3 +8,4 @@ from .mode import ModeSelection
 from .indicator import StatusColor, TranslationStatus
 from .shortcut import set_shortcut
 from .chatgpt import ChatgptBatchTranslationManager
+from .gemini_batch import GeminiBatchTranslationManager

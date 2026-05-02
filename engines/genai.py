@@ -14,6 +14,7 @@ class GenAI(Base, ABC):
     temperature: float
     top_p: float
     top_k: int
+    thinking: str = 'default'
 
     @abstractmethod
     def get_models(self) -> list[str]:
