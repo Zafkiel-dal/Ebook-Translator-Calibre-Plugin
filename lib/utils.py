@@ -153,6 +153,33 @@ def traceback_error():
     return traceback.format_exc(chain=False).strip()
 
 
+def sanitize_for_log(message):
+    """Sanitize log messages by masking API keys while preserving debug info.
+    
+    Removes sensitive data (API keys, tokens) from error messages while
+    keeping error codes, stack traces, and technical details intact.
+    """
+    if not message or not isinstance(message, str):
+        return message
+    # Mask API keys in common formats:
+    # - Bearer sk-xxxx, key=xxxx, "api_key": "xxxx"
+    # - Google-style keys in URLs: ?key=AIzaSy...
+    message = re.sub(
+        r'(api[_\-]?key["\']?\s*[:=]\s*["\']?[\w-]+)',
+        'api_key=***REDACTED***', message, flags=re.IGNORECASE)
+    message = re.sub(
+        r'(Bearer\s+)([\w-]+)',
+        r'\1***REDACTED***', message, flags=re.IGNORECASE)
+    message = re.sub(
+        r'(x-api-key["\']?\s*[:=]\s*["\']?[\w-]+)',
+        'x-api-key=***REDACTED***', message, flags=re.IGNORECASE)
+    # Mask Google URL keys: ?key=AIzaSy...&
+    message = re.sub(
+        r'(key=)(AIza[\w-]+)',
+        r'\1***REDACTED***', message, flags=re.IGNORECASE)
+    return message
+
+
 def request(
         url, data=None, headers={}, method='GET', timeout=30, proxy_uri=None,
         raw_object=False) -> Response | str | None:

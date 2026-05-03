@@ -6,7 +6,7 @@ from mechanize import HTTPError
 
 from calibre.utils.localization import _, lang_as_iso639_1  # type: ignore
 
-from ..lib.utils import log, traceback_error, request, socks_proxy
+from ..lib.utils import log, traceback_error, request, socks_proxy, sanitize_for_log
 from ..lib.exception import UnexpectedResult
 
 from .languages import lang_directionality
@@ -226,9 +226,11 @@ class Base:
             # Swap a valid API key if necessary.
             if self.need_swap_api_key(error_message) and self.swap_api_key():
                 return self.translate(content)
+            # Sanitize error message to prevent sensitive data exposure.
+            safe_message = sanitize_for_log(error_message)
             raise UnexpectedResult(
                 _('Can not parse returned response. Raw data: {}')
-                .format('\n\n' + error_message))
+                .format('\n\n' + safe_message))
 
     def get_endpoint(self):
         return self.endpoint
