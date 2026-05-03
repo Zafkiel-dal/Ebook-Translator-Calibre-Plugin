@@ -61,6 +61,7 @@ class BatchTranslation(QDialog):
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setRowCount(len(self.ebooks))
+        table.blockSignals(True)
 
         headers = (
             _('Title'), _('Encoding'), _('Input Format'), _('Output Format'),
@@ -184,6 +185,7 @@ class BatchTranslation(QDialog):
             table.resizeRowsToContents()
             table.resizeColumnsToContents()
 
+        table.blockSignals(False)
         layout.addWidget(table)
 
         start_button = QPushButton(_('Translate'))
@@ -203,6 +205,11 @@ class BatchTranslation(QDialog):
                 item.row(), item.text().strip() or _('Unknown')))
 
         return widget
+
+    def alter_ebooks_data(self, row, title):
+        """Update the ebook title when the table item is changed."""
+        if 0 <= row < len(self.ebooks):
+            self.ebooks[row].title = title
 
     def translate_ebooks(self):
         output_path = self.config.get('output_path')

@@ -91,13 +91,13 @@ class EngineWorker(QObject):
 
 
 class EngineTester(QDialog):
-    usage_thread = QThread()
-    translation_thread = QThread()
 
     def __init__(self, parent, translator):
         QDialog.__init__(self, parent)
         self.parent = parent
         self.translator = translator
+        self.usage_thread = QThread()
+        self.translation_thread = QThread()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle(_('Test Translation Engine'))
         self.setModal(True)

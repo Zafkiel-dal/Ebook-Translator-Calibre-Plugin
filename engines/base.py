@@ -43,8 +43,8 @@ class Base:
     max_error_count: int = 10
 
     def __init__(self):
-        self.source_lang: str
-        self.target_lang: str
+        self.source_lang: str = ''
+        self.target_lang: str = ''
         self.search_paths: list = []
 
         self.proxy_type: str | None = None  # http, socks5
@@ -137,7 +137,9 @@ class Base:
     def set_search_paths(self, paths):
         self.search_paths = paths
 
-    def get_external_program(self, name: str, paths: list = []) -> str | None:
+    def get_external_program(self, name: str, paths: list | None = None) -> str | None:
+        if paths is None:
+            paths = []
         for path in paths + self.search_paths:
             if not path.endswith('%s%s' % (os.path.sep, name)):
                 path = os.path.join(path, name)
@@ -165,7 +167,7 @@ class Base:
 
     @property
     def proxy_uri(self) -> str | None:
-        if not all((self.proxy_type, self.proxy_host, self.proxy_port)):
+        if None in (self.proxy_type, self.proxy_host, self.proxy_port):
             return None
         uri = f'{self.proxy_host}:{self.proxy_port}'
         if not uri.startswith('http'):

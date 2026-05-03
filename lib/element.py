@@ -244,7 +244,9 @@ class PageElement(Element):
         return re.sub(r'((\w)\2{3})\2*', r'\1', translation)
 
     def _create_new_element(
-            self, name, content='', copy_attrs=True, excluding_attrs=[]):
+            self, name, content='', copy_attrs=True, excluding_attrs=None):
+        if excluding_attrs is None:
+            excluding_attrs = []
         # Copy the namespaces from the original namespaces to the new ones.
         namespaces = ' '.join(
             'xmlns%s="%s"' % ('' if name is None else ':' + name, value)
@@ -583,7 +585,9 @@ class Extraction:
                 return True
         return False
 
-    def extract_elements(self, page_id, root, elements=[]):
+    def extract_elements(self, page_id, root, elements=None):
+        if elements is None:
+            elements = []
         """If the root matches the pattern, return an empty list; otherwise,
         just break the recursion without doing anything.
         """
@@ -676,11 +680,15 @@ class ElementHandler:
         if isinstance(values, tuple) and len(values) == 2:
             self.column_gap = values
 
-    def load_remove_rules(self, rules=[]):
+    def load_remove_rules(self, rules=None):
+        if rules is None:
+            rules = []
         default_rules = ('rt', 'rp')
         self.remove_pattern = create_xpath(default_rules + tuple(rules))
 
-    def load_reserve_rules(self, rules=[]):
+    def load_reserve_rules(self, rules=None):
+        if rules is None:
+            rules = []
         # Reserve the <br> element instead of using a line break to prevent
         # conflicts with the mechanism of merge translation.
         default_rules = (
@@ -857,7 +865,9 @@ def get_metadata_elements(metadata):
     return elements
 
 
-def get_toc_elements(nodes, elements=[]):
+def get_toc_elements(nodes, elements=None):
+    if elements is None:
+        elements = []
     """Be aware that elements should not overlap with existing data."""
     for node in nodes:
         elements.append(TocElement(node, 'toc.ncx'))

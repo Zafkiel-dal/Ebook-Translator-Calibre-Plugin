@@ -16,6 +16,7 @@ from .batch import BatchTranslation
 from .setting import TranslationSetting
 from .cache import CacheManager
 from .about import AboutDialog
+from .token_history import TokenHistoryDialog
 from .components import AlertMessage, ModeSelection
 from .advanced import CreateTranslationProject, AdvancedTranslation
 
@@ -50,6 +51,7 @@ class EbookTranslatorGui(InterfaceAction):
         menu.addAction(_('Batch Mode'), self.show_batch_translation)
         menu.addSeparator()
         menu.addAction(_('Cache'), self.show_cache)
+        menu.addAction(_('Token History'), self.show_token_history)
         menu.addSeparator()
         menu.addAction(_('Setting'), self.show_setting)
         menu.addAction(_('About'), self.show_about)
@@ -139,6 +141,18 @@ class EbookTranslatorGui(InterfaceAction):
         window.setWindowIcon(self.icon)
         window.show()
         self.add_window('cache', window)
+
+    def show_token_history(self):
+        if self.show_window('token_history'):
+            return
+        window = TokenHistoryDialog(self.gui)
+        window.setModal(True)
+        window.setMinimumWidth(900)
+        window.setMinimumHeight(500)
+        window.setWindowTitle('%s - %s' % (_('Token Usage History'), self.title))
+        window.setWindowIcon(self.icon)
+        window.show()
+        self.add_window('token_history', window)
 
     def show_about(self):
         if self.show_window('about'):

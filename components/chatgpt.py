@@ -126,10 +126,10 @@ class ChatgptBatchTranslationWorker(QObject):
 
 
 class ChatgptBatchTranslationManager(QDialog):
-    batch_thread = QThread()
 
     def __init__(self, translator, cache, table, parent=None):
         QDialog.__init__(self, parent=parent)
+        self.batch_thread = QThread()
         self.setWindowTitle(_('ChatGPT Batch Translation'))
         self.setMinimumWidth(500)
         self.setMinimumHeight(300)
@@ -323,6 +323,8 @@ class ChatgptBatchTranslationManager(QDialog):
             self.parent().raise_()
 
     def done(self, reason):
+        self.batch_thread.quit()
+        self.batch_thread.wait()
         QDialog.done(self, reason)
         self.parent().raise_()
 

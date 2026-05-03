@@ -19,7 +19,8 @@ from .lib.utils import (
     log, css, is_proxy_available, traceback_error, socks_proxy)
 from .lib.translation import get_engine_class, get_translator
 from .engines import (
-    builtin_engines, GeminiTranslate, ChatgptTranslate, AzureChatgptTranslate)
+    builtin_engines, GeminiTranslate, DeepseekTranslate,
+    ChatgptTranslate, AzureChatgptTranslate)
 from .engines.genai import GenAI
 from .engines.custom import CustomTranslate
 from .components import (
@@ -619,18 +620,30 @@ class TranslationSetting(QDialog):
 
         thinking = QComboBox()
         thinking.addItems(['default'])
-        genai_layout.addRow(_('Thinking'), thinking)
+        thinking_widget = QWidget()
+        thinking_layout = QHBoxLayout(thinking_widget)
+        thinking_layout.setContentsMargins(0, 0, 0, 0)
+        thinking_layout.addWidget(QLabel(_('Thinking')))
+        thinking_layout.addWidget(thinking, 1)
+        thinking_widget.setVisible(False)
+        genai_layout.addRow(thinking_widget)
 
         # Thinking options differ by model family:
         # - Gemini 3.x (thinkingLevel): default, minimal, low, medium, high
         # - Gemini 2.5 (thinkingBudget): default, disable, dynamic
+        # - DeepSeek / other thinking models: default, low, medium, high
         # - Older/non-thinking models: default only
         _thinking_options = {
             'gemini3': ['default', 'minimal', 'low', 'medium', 'high'],
             'gemini25': ['default', 'disable', 'dynamic'],
             'none': ['default'],
-            'other': ['default', 'low', 'medium', 'high'],
+            'deepseek': ['default', 'low', 'medium', 'high'],
         }
+
+        def _is_thinking_engine():
+            """Check if the current engine supports thinking."""
+            return issubclass(self.current_engine, GeminiTranslate) \
+                or issubclass(self.current_engine, DeepseekTranslate)
 
         def _update_thinking_options(model_name):
             """Update thinking dropdown based on selected model."""
@@ -640,9 +653,12 @@ class TranslationSetting(QDialog):
             except TypeError:
                 pass
             thinking.clear()
-            if not model_name or not issubclass(
+            if issubclass(self.current_engine, DeepseekTranslate):
+                # DeepSeek: always show the same options regardless of model
+                opts = _thinking_options['deepseek']
+            elif not model_name or not issubclass(
                     self.current_engine, GeminiTranslate):
-                opts = _thinking_options['other']
+                opts = _thinking_options['none']
             elif model_name.startswith('gemini-3'):
                 opts = _thinking_options['gemini3']
             elif (model_name.startswith('gemini-2.5')
@@ -712,12 +728,12 @@ class TranslationSetting(QDialog):
                     genai_model_input.clear()
             genai_model_list.currentTextChanged.connect(init_ai_models)
             # Update thinking dropdown based on selected model
-            if issubclass(self.current_engine, GeminiTranslate):
+            if _is_thinking_engine():
                 _update_thinking_options(model)
         self.model_worker.finished.connect(init_ai_models)
         def _on_custom_model_changed(model):
             self.current_engine.config.update(model=model.strip())
-            if issubclass(self.current_engine, GeminiTranslate):
+            if _is_thinking_engine():
                 _update_thinking_options(model.strip())
         genai_model_input.textChanged.connect(_on_custom_model_changed)
 
@@ -812,25 +828,29 @@ class TranslationSetting(QDialog):
                     config.get('top_k', self.current_engine.top_k))
                 top_k_value.valueChanged.connect(
                     lambda value: config.update(top_k=value))
-            # Stream
-            # Migrate thinking from old values to new format
-            thinking_val = config.get('thinking', self.current_engine.thinking)
-            if isinstance(thinking_val, bool):
-                thinking_val = 'high' if thinking_val else 'default'
-                config['thinking'] = thinking_val
-            elif thinking_val == 'default[disable]':
-                thinking_val = 'default'
-                config['thinking'] = thinking_val
-            elif thinking_val in ('med', 'meduime'):
-                thinking_val = 'medium'
-                config['thinking'] = thinking_val
-            # Fallback: if value not in dropdown, reset to default
-            thinking_items = [thinking.itemText(i)
-                              for i in range(thinking.count())]
-            if thinking_val not in thinking_items:
-                thinking_val = 'default'
-                config['thinking'] = thinking_val
-            thinking.setCurrentText(thinking_val)
+            # Show/hide thinking row based on engine type
+            if _is_thinking_engine():
+                thinking_widget.setVisible(True)
+                # Migrate thinking from old values to new format
+                thinking_val = config.get('thinking', self.current_engine.thinking)
+                if isinstance(thinking_val, bool):
+                    thinking_val = 'high' if thinking_val else 'default'
+                    config['thinking'] = thinking_val
+                elif thinking_val == 'default[disable]':
+                    thinking_val = 'default'
+                    config['thinking'] = thinking_val
+                elif thinking_val in ('med', 'meduime'):
+                    thinking_val = 'medium'
+                    config['thinking'] = thinking_val
+                # Fallback: if value not in dropdown, reset to default
+                thinking_items = [thinking.itemText(i)
+                                  for i in range(thinking.count())]
+                if thinking_val not in thinking_items:
+                    thinking_val = 'default'
+                    config['thinking'] = thinking_val
+                thinking.setCurrentText(thinking_val)
+            else:
+                thinking_widget.setVisible(False)
 
             stream_enabled.setChecked(
                 config.get('stream', self.current_engine.stream))
