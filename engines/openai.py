@@ -99,14 +99,6 @@ class ChatgptTranslate(GenAI):
                 {'role': 'user', 'content': text}
             ],
         }
-        
-        if self.model and 'deepseek' in self.model.lower():
-            if self.thinking in ('default[disable]',):
-                body['thinking'] = {'type': 'disabled'}
-            elif self.thinking and self.thinking != 'default':
-                body['thinking'] = {'type': 'enabled'}
-                val = 'medium' if self.thinking in ['med', 'meduime'] else self.thinking
-                body['reasoning_effort'] = val
 
         if self.stream:
             body.update(stream=True)

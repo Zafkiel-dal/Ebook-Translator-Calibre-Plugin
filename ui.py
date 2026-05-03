@@ -146,10 +146,10 @@ class EbookTranslatorGui(InterfaceAction):
         if self.show_window('token_history'):
             return
         window = TokenHistoryDialog(self.gui)
-        window.setModal(True)
         window.setMinimumWidth(900)
-        window.setMinimumHeight(500)
-        window.setWindowTitle('%s - %s' % (_('Token Usage History'), self.title))
+        window.setMinimumHeight(550)
+        window.setWindowTitle(
+            '%s - %s' % (_('Token Usage History'), self.title))
         window.setWindowIcon(self.icon)
         window.show()
         self.add_window('token_history', window)

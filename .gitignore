@@ -7,9 +7,3 @@ tags
 node_modules/
 Ebook-Translator.zip
 .agents/
-
-# Test and development files
-test.py
-run_thinking_tests.py
-compare_repos.py
-tests/

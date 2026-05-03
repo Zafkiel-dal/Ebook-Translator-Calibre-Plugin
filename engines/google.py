@@ -407,7 +407,7 @@ class GeminiTranslate(GenAI):
         if not self.model or 'gemini' not in self.model:
             return False
         # Gemini 2.5+ and 3.x models support thinking
-        for prefix in ('gemini-2.5', 'gemini-3'):
+        for prefix in ('gemini-2.5', 'gemini-2.6', 'gemini-3'):
             if self.model.startswith(prefix):
                 return True
         # Also check for future models like gemini-4, gemini-5, etc.
@@ -427,7 +427,7 @@ class GeminiTranslate(GenAI):
         # Gemini 3.x uses thinkingLevel
         if self.model.startswith('gemini-3'):
             return 'gemini3'
-        # Gemini 2.5+ uses thinkingBudget
+        # Gemini 2.5/2.6+ uses thinkingBudget
         return 'gemini25'
 
     def _supports_thinking_level(self):
