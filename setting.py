@@ -505,8 +505,19 @@ class TranslationSetting(QDialog):
         self.genai_prompt = QPlainTextEdit()
         self.genai_prompt.setFixedHeight(100)
         genai_layout.addRow(_('Prompt'), self.genai_prompt)
+        endpoint_widget = QWidget()
+        endpoint_layout = QHBoxLayout(endpoint_widget)
+        endpoint_layout.setContentsMargins(0, 0, 0, 0)
         self.genai_endpoint = QLineEdit()
-        genai_layout.addRow(_('Endpoint'), self.genai_endpoint)
+        self.genai_endpoint_reset = QPushButton(_('Reset'))
+        self.genai_endpoint_reset.setToolTip(_(
+            'Restore the default endpoint for the selected engine.'))
+        self.genai_endpoint_reset.clicked.connect(
+            lambda: self.genai_endpoint.setText(
+                self.current_engine.endpoint))
+        endpoint_layout.addWidget(self.genai_endpoint, 1)
+        endpoint_layout.addWidget(self.genai_endpoint_reset)
+        genai_layout.addRow(_('Endpoint'), endpoint_widget)
 
         genai_model = QWidget()
         genai_model_layout = QHBoxLayout(genai_model)
@@ -695,6 +706,58 @@ class TranslationSetting(QDialog):
             _('Reserved for context (tokens)'), novel_context_tokens)
         self.disable_wheel_event(novel_context_tokens)
 
+        novel_context_strategy = QComboBox()
+        novel_context_strategy.addItem(_('Hybrid (recommended)'), 'hybrid')
+        novel_context_strategy.addItem(_('Selective'), 'selective')
+        novel_context_strategy.addItem(_('Full (still bounded)'), 'full')
+        novel_context_strategy.setToolTip(_(
+            'Controls which long-term memory candidates are considered for '
+            'each chunk. All modes obey the context token budget. Hybrid '
+            'keeps relevant entities and terms plus a small recent-summary '
+            'slice.'))
+        novel_layout.addRow(_('Memory context strategy'),
+                            novel_context_strategy)
+        self.disable_wheel_event(novel_context_strategy)
+
+        novel_active_entity_window = QSpinBox()
+        novel_active_entity_window.setRange(1, 50)
+        novel_active_entity_window.setToolTip(_(
+            'Keep directly mentioned entities active for this many recent '
+            'chunks. This helps resolve pronouns and indirect references '
+            'without an extra model call.'))
+        novel_layout.addRow(_('Active entity window (chunks)'),
+                            novel_active_entity_window)
+        self.disable_wheel_event(novel_active_entity_window)
+
+        novel_ambiguity_resolver = QComboBox()
+        novel_ambiguity_resolver.addItem(_('Off (recommended)'), 'off')
+        novel_ambiguity_resolver.addItem(_('Auto for unresolved aliases'),
+                                          'auto')
+        novel_ambiguity_resolver.setToolTip(_(
+            'Only use the selected LLM when offline alias matching remains '
+            'ambiguous. The resolver can select entity IDs but cannot write '
+            'memory, facts, or glossary entries.'))
+        novel_layout.addRow(_('Model ambiguity resolver'),
+                            novel_ambiguity_resolver)
+        self.disable_wheel_event(novel_ambiguity_resolver)
+
+        novel_series_memory = QCheckBox(_(
+            'Share memory between ordered books in a Calibre series'))
+        novel_series_memory.setToolTip(_(
+            'Uses Calibre series metadata, or an optional per-project '
+            'override, to retrieve compact snapshots from earlier books. '
+            'Books without a reliable order remain safely book-scoped.'))
+        novel_layout.addRow(_('Series memory'), novel_series_memory)
+
+        novel_memory_debug = QCheckBox(_(
+            'Log rendered memory context before each chunk'))
+        novel_memory_debug.setToolTip(_(
+            'Write the exact bounded [STORY CONTEXT], character, and term '
+            'blocks supplied to the model into the Novel Mode log. Enable '
+            'only while diagnosing translations, because the log can contain '
+            'story text and canonical translations.'))
+        novel_layout.addRow(_('Memory debugging'), novel_memory_debug)
+
         novel_summary_tokens = QSpinBox()
         novel_summary_tokens.setRange(50, 5000)
         novel_summary_tokens.setSingleStep(50)
@@ -703,10 +766,11 @@ class TranslationSetting(QDialog):
         self.disable_wheel_event(novel_summary_tokens)
 
         novel_glossary_max = QSpinBox()
-        novel_glossary_max.setRange(10, 5000)
+        novel_glossary_max.setRange(0, 5000)
+        novel_glossary_max.setSpecialValueText(_('Unlimited'))
         novel_glossary_max.setSingleStep(10)
         novel_layout.addRow(
-            _('Glossary max entries'), novel_glossary_max)
+            _('Glossary max entries (0 = unlimited)'), novel_glossary_max)
         self.disable_wheel_event(novel_glossary_max)
 
         novel_min_chars = QSpinBox()
@@ -762,10 +826,26 @@ class TranslationSetting(QDialog):
                 novel_structured.setCurrentIndex(idx)
             novel_context_tokens.setValue(int(self.config.get(
                 'novel_context_tokens', 1500) or 1500))
+            strategy = self.config.get(
+                'novel_context_strategy', 'hybrid') or 'hybrid'
+            idx = novel_context_strategy.findData(strategy)
+            if idx >= 0:
+                novel_context_strategy.setCurrentIndex(idx)
+            novel_active_entity_window.setValue(int(self.config.get(
+                'novel_active_entity_window', 6) or 6))
+            ambiguity_mode = self.config.get(
+                'novel_ambiguity_resolver', 'off') or 'off'
+            idx = novel_ambiguity_resolver.findData(ambiguity_mode)
+            if idx >= 0:
+                novel_ambiguity_resolver.setCurrentIndex(idx)
+            novel_series_memory.setChecked(bool(self.config.get(
+                'novel_series_memory', True)))
+            novel_memory_debug.setChecked(bool(self.config.get(
+                'novel_memory_debug', False)))
             novel_summary_tokens.setValue(int(self.config.get(
                 'novel_summary_tokens', 400) or 400))
             novel_glossary_max.setValue(int(self.config.get(
-                'novel_glossary_max_entries', 200) or 200))
+                'novel_glossary_max_entries', 0) or 0))
             novel_min_chars.setValue(int(self.config.get(
                 'novel_min_chars_for_context', 300) or 0))
             novel_translation_prompt.setPlaceholderText(
@@ -806,6 +886,19 @@ class TranslationSetting(QDialog):
                 novel_structured_output=novel_structured.currentData()))
         novel_context_tokens.valueChanged.connect(
             _persist_novel('novel_context_tokens', int))
+        novel_context_strategy.currentIndexChanged.connect(
+            lambda _idx: self.config.update(
+                novel_context_strategy=novel_context_strategy.currentData()))
+        novel_active_entity_window.valueChanged.connect(
+            _persist_novel('novel_active_entity_window', int))
+        novel_ambiguity_resolver.currentIndexChanged.connect(
+            lambda _idx: self.config.update(
+                novel_ambiguity_resolver=
+                novel_ambiguity_resolver.currentData()))
+        novel_series_memory.toggled.connect(
+            lambda checked: self.config.update(novel_series_memory=checked))
+        novel_memory_debug.toggled.connect(
+            lambda checked: self.config.update(novel_memory_debug=checked))
         novel_summary_tokens.valueChanged.connect(
             _persist_novel('novel_summary_tokens', int))
         novel_glossary_max.valueChanged.connect(

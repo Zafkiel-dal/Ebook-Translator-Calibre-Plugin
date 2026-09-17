@@ -19,13 +19,14 @@ from .. import EbookTranslator
 
 from .config import get_config
 from .utils import log, sep, uid, open_path, open_file
-from .cache import get_cache
+from .cache import TranslationCache, get_cache
 from .element import (
     get_element_handler, get_srt_elements, get_toc_elements, get_page_elements,
     get_metadata_elements, get_pgn_elements)
 from .translation import get_translator, get_translation
 from .novel import (
     ChapterBuilder, ContextManager, NovelTranslator, novel_cache_id)
+from .novel_memory import MemoryDescriptor, MemoryStore
 from .exception import ConversionAbort
 
 
@@ -154,7 +155,52 @@ def convert_book_novel(
 
         paragraphs = cache.all_paragraphs()
 
+        # ``TranslationCache.all_paragraphs`` intentionally omits missing
+        # translations in cache-only mode. Temporarily expose every row so
+        # ChapterBuilder can identify the same narrative paragraphs that the
+        # interactive NovelTranslationWorker would translate.
         if cache_only:
+            cache_only_was_enabled = cache.cache_only
+            cache.set_cache_only(False)
+            try:
+                narrative_paragraphs = cache.all_paragraphs()
+            finally:
+                cache.set_cache_only(cache_only_was_enabled)
+        else:
+            narrative_paragraphs = paragraphs
+
+        # Compute the ordered spine (xhtml pages only) so ChapterBuilder uses
+        # the exact same chapter-selection rules in both modes.
+        import re as _re
+        from .utils import sorted_mixed_keys
+        page_pattern = _re.compile(r'\.(xhtml|html|htm|xml|xht)$')
+        xhtml_items = [item for item in oeb.manifest.items
+                       if page_pattern.search(item.href or '')]
+        xhtml_items.sort(key=lambda item: sorted_mixed_keys(item.href or ''))
+        ordered_page_ids = [item.id for item in xhtml_items]
+        chapters = ChapterBuilder(
+            ordered_page_ids, oeb.toc.nodes, list(oeb.manifest.items),
+            narrative_paragraphs, source=chapter_source,
+            front_matter_min_chars=int(
+                (novel_config or {}).get(
+                    'novel_front_matter_min_chars', 100) or 0)).build()
+
+        if cache_only:
+            required = {
+                paragraph.id: paragraph
+                for chapter in chapters
+                for paragraph in chapter.translatable_paragraphs()
+            }
+            missing_ids = [
+                str(paragraph_id)
+                for paragraph_id in sorted(required, key=str)
+                if not required[paragraph_id].translation
+            ]
+            if missing_ids:
+                raise ConversionAbort(_(
+                    'Cannot build cache-only novel output: {} narrative '
+                    'paragraph(s) are missing translations (IDs: {}).'
+                ).format(len(missing_ids), ', '.join(missing_ids)))
             # Cache-only path: the UI already ran the translation pipeline
             # interactively and populated the cache. We just need to inject
             # the existing translations back into the DOM and let Plumber
@@ -163,41 +209,20 @@ def convert_book_novel(
                 'Novel mode (cache-only): reusing {} cached paragraph(s).')
                 .format(len(paragraphs)))
         else:
-            # 2. Compute the ordered spine (xhtml pages only) so
-            #    ChapterBuilder can walk the book in reading order. Reuse
-            #    the same key as ``Extraction.get_sorted_pages`` for
-            #    consistency.
-            import re as _re
-            from .utils import sorted_mixed_keys
-            page_pattern = _re.compile(r'\.(xhtml|html|htm|xml|xht)$')
-            xhtml_items = [item for item in oeb.manifest.items
-                           if page_pattern.search(item.href or '')]
-            xhtml_items.sort(
-                key=lambda item: sorted_mixed_keys(item.href or ''))
-            ordered_page_ids = [item.id for item in xhtml_items]
-
-            # 3. Build chapters.
-            builder = ChapterBuilder(
-                ordered_page_ids, oeb.toc.nodes,
-                list(oeb.manifest.items), paragraphs,
-                source=chapter_source,
-                front_matter_min_chars=int(
-                    (novel_config or {}).get(
-                        'novel_front_matter_min_chars', 100) or 0))
-            chapters = builder.build()
+            # 2. Build chapters from the current OEB and cached paragraphs.
             log_callback(
                 _('Novel mode: {} chapter(s) detected.')
                 .format(len(chapters)))
 
-            # 4. Load the context manager (summaries + glossary + progress).
+            # 3. Load the context manager (summaries + glossary + progress).
             ctx = ContextManager(
                 cache,
                 glossary_max_entries=int(
                     (novel_config or {}).get(
-                        'novel_glossary_max_entries', 200) or 0),
+                        'novel_glossary_max_entries', 0) or 0),
             ).load()
 
-            # 5. Non-chapter paragraphs (metadata, TOC titles): translate
+            # 4. Non-chapter paragraphs (metadata, TOC titles): translate
             #    them with the classic single-shot translator so the
             #    resulting ebook is not stuck with English titles /
             #    metadata.
@@ -233,10 +258,20 @@ def convert_book_novel(
                             _('Auxiliary translation failed for id={}: {}')
                             .format(para.id, exc), True)
 
-            # 6. Run the novel translator on chapter content.
+            # 5. Run the novel translator on chapter content.
+            # Background conversion has no live Calibre metadata. It still
+            # receives the same deterministic book-level memory layer; the
+            # interactive project flow upgrades this to a series descriptor.
+            descriptor = MemoryDescriptor.book(
+                'path:%s' % uid(input_path),
+                getattr(translator, 'source_lang', '') or '',
+                getattr(translator, 'target_lang', '') or '')
+            memory_store = MemoryStore(
+                descriptor.database_path(TranslationCache.dir_path))
             novel_translator = NovelTranslator(
                 translator, chapters, ctx, cache,
-                config=novel_config or {})
+                config=novel_config or {}, memory_store=memory_store,
+                memory_descriptor=descriptor)
             novel_translator.set_logging(log_callback)
             novel_translator.set_progress(progress_callback)
             novel_translator.set_cancel_request(cancel_request)
@@ -244,9 +279,12 @@ def convert_book_novel(
                 novel_translator.set_chapter_started(chapter_started)
             if chapter_done is not None:
                 novel_translator.set_chapter_done(chapter_done)
-            novel_translator.run()
+            try:
+                novel_translator.run()
+            finally:
+                memory_store.close()
 
-        # 7. Reload paragraphs from cache (they were mutated during
+        # 6. Reload paragraphs from cache (they were mutated during
         #    translation via update_paragraph) and reinject into the DOM.
         paragraphs = cache.all_paragraphs()
         element_handler.add_translations(paragraphs)
@@ -444,9 +482,17 @@ def get_novel_config():
         'novel_front_matter_min_chars': config.get(
             'novel_front_matter_min_chars', 100),
         'novel_context_tokens': config.get('novel_context_tokens', 1500),
+        'novel_context_strategy': config.get(
+            'novel_context_strategy', 'hybrid'),
+        'novel_active_entity_window': config.get(
+            'novel_active_entity_window', 6),
+        'novel_ambiguity_resolver': config.get(
+            'novel_ambiguity_resolver', 'off'),
+        'novel_series_memory': config.get('novel_series_memory', True),
+        'novel_memory_debug': config.get('novel_memory_debug', False),
         'novel_summary_tokens': config.get('novel_summary_tokens', 400),
         'novel_glossary_max_entries': config.get(
-            'novel_glossary_max_entries', 200),
+            'novel_glossary_max_entries', 0),
         'novel_min_chars_for_context': config.get(
             'novel_min_chars_for_context', 300),
         'novel_summary_input_max_chars': config.get(

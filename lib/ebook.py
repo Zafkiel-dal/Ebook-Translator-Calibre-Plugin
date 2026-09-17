@@ -3,7 +3,7 @@ from typing import Iterator, Iterable
 
 class Ebook:
     def __init__(self, id, title, files, input_format, source_lang,
-                 extra_formats=[]):
+                 extra_formats=[], memory_metadata=None):
         self.id = id
         self.files = files
         self.input_format = input_format
@@ -18,6 +18,10 @@ class Ebook:
         self.custom_title = None
         self.encoding = 'utf-8'
         self.target_direction = 'auto'
+        # Captured in the GUI process so Novel Mode workers do not need to
+        # touch Calibre's live library database.
+        self.memory_metadata = dict(memory_metadata or {})
+        self.memory_descriptor = None
 
     def set_input_format(self, format):
         self.input_format = format

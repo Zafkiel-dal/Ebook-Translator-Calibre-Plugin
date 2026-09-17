@@ -59,8 +59,20 @@ defaults: dict[str, Any] = {
     'novel_structured_output': 'auto',
     'novel_overlap_paragraphs': 3,
     'novel_context_tokens': 1500,
+    # Long-term memory retrieval stays bounded by novel_context_tokens.
+    # Selective only uses directly relevant memory; Hybrid also reserves a
+    # small summary slice; Full considers more candidates but remains capped.
+    'novel_context_strategy': 'hybrid',
+    'novel_active_entity_window': 6,
+    # Model calls are reserved for unresolved alias collisions. Normal
+    # selection is deterministic and offline.
+    'novel_ambiguity_resolver': 'off',
+    'novel_series_memory': True,
+    'novel_memory_debug': False,
     'novel_summary_tokens': 400,
-    'novel_glossary_max_entries': 200,
+    # Persistent memory is unbounded; prompt fitting selects only relevant
+    # terms. Zero also keeps the PR #590 compatibility mirror unlimited.
+    'novel_glossary_max_entries': 0,
     # Chapters with fewer translated characters than this threshold are
     # translated normally but skip the summary + glossary extraction
     # LLM calls. Typical target: front/back matter (Copyright, Table of

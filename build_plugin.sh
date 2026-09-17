@@ -40,6 +40,12 @@ zip -r "$OUTPUT" . \
     -x "./.github/*" \
     -x "./tests" \
     -x "./tests/*" \
+    -x "./test-artifacts" \
+    -x "./test-artifacts/*" \
+    -x "./LIVE_TEST_RESULTS.md" \
+    -x "./test.py" \
+    -x "./.kilo" \
+    -x "./.kilo/*" \
     -x "./page" \
     -x "./page/*" \
     -x "./build_plugin.sh" \

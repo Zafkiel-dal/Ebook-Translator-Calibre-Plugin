@@ -1,10 +1,13 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 from unittest.mock import patch, Mock
 
-from ...lib.conversion import ConversionWorker
+from ...lib.cache import Paragraph
+from ...lib.conversion import ConversionWorker, convert_book_novel
 from ...lib.ebook import Ebook
+from ...lib.exception import ConversionAbort
 
 
 module_name = 'calibre_plugins.ebook_translator.lib.conversion'
@@ -301,3 +304,109 @@ class TestConversionWorker(unittest.TestCase):
         arguments = self.worker.gui.proceed_question.mock_calls[0].kwargs
         self.assertEqual(True, arguments.get('log_is_file'))
         self.assertIs(self.icon, arguments.get('icon'))
+
+
+class _CacheOnlyNovelCache:
+    def __init__(self, paragraphs):
+        self.paragraphs = paragraphs
+        self.cache_only = True
+
+    def save(self, original_group):
+        pass
+
+    def set_cache_only(self, cache_only):
+        self.cache_only = cache_only
+
+    def all_paragraphs(self):
+        if not self.cache_only:
+            return list(self.paragraphs)
+        return [p for p in self.paragraphs if p.translation]
+
+
+class TestCacheOnlyNovelConversion(unittest.TestCase):
+    @staticmethod
+    def _paragraph(pid, page, translation=None, text='narrative text'):
+        return Paragraph(
+            pid, 'md5-%s' % pid, text, text, page=page,
+            translation=translation)
+
+    @staticmethod
+    def _oeb(items):
+        return SimpleNamespace(
+            metadata=Mock(),
+            toc=SimpleNamespace(nodes=[]),
+            manifest=SimpleNamespace(items=items),
+        )
+
+    def _convert_cache_only(self, oeb, cache, novel_config):
+        output_convert = Mock()
+        output_plugin = Mock()
+        output_plugin.convert = output_convert
+        output_plugin.report_progress = Mock()
+        plumber = Mock()
+        plumber.output_plugin = output_plugin
+
+        def run():
+            output_plugin.convert(oeb, 'output.epub', None, None, Mock())
+
+        plumber.run.side_effect = run
+        element_handler = Mock()
+        element_handler.prepare_original.return_value = []
+
+        with patch(module_name + '.Plumber', return_value=plumber), \
+                patch(module_name + '.CompositeProgressReporter'), \
+                patch(module_name + '.get_metadata_elements', return_value=[]), \
+                patch(module_name + '.get_toc_elements', return_value=[]), \
+                patch(module_name + '.get_page_elements', return_value=[]):
+            convert_book_novel(
+                'input.epub', 'output.epub', Mock(), element_handler, cache,
+                'debug', 'utf-8', Mock(), novel_config=novel_config,
+                cache_only=True)
+        return output_convert, element_handler
+
+    def test_cache_only_aborts_for_missing_narrative_paragraphs(self):
+        items = [
+            SimpleNamespace(id='chapter-1', href='chapter-1.xhtml'),
+            SimpleNamespace(id='chapter-2', href='chapter-2.xhtml'),
+        ]
+        oeb = self._oeb(items)
+        cache = _CacheOnlyNovelCache([
+            self._paragraph(10, 'chapter-1', translation='Translated one'),
+            self._paragraph(20, 'chapter-2'),
+            self._paragraph(99, 'content.opf'),
+        ])
+
+        with self.assertRaisesRegex(
+                ConversionAbort,
+                r'1 narrative paragraph\(s\) are missing translations '
+                r'\(IDs: 20\)'):
+            self._convert_cache_only(
+                oeb, cache, {'novel_front_matter_min_chars': 0})
+
+        self.assertTrue(cache.cache_only)
+
+    def test_cache_only_allows_missing_auxiliary_and_skipped_rows(self):
+        items = [
+            SimpleNamespace(id='cover', href='cover.xhtml'),
+            SimpleNamespace(id='story', href='story.xhtml'),
+            SimpleNamespace(id='license', href='license.xhtml'),
+        ]
+        oeb = self._oeb(items)
+        cache = _CacheOnlyNovelCache([
+            self._paragraph(1, 'content.opf'),
+            self._paragraph(2, 'toc.ncx'),
+            self._paragraph(3, 'cover', text='THE BOOK'),
+            self._paragraph(
+                4, 'story', translation='Translated story', text='x' * 200),
+            self._paragraph(
+                5, 'license', text=(
+                    'THE FULL PROJECT GUTENBERG LICENSE. '
+                    'Project Gutenberg is a registered trademark. ' * 4)),
+        ])
+
+        output_convert, element_handler = self._convert_cache_only(
+            oeb, cache, {'novel_front_matter_min_chars': 100})
+
+        output_convert.assert_called_once()
+        translated = element_handler.add_translations.call_args.args[0]
+        self.assertEqual([4], [paragraph.id for paragraph in translated])

@@ -66,8 +66,13 @@ class ChatgptTranslate(GenAI):
         self.model = self.config.get('model', self.model)
 
     def get_models(self):
-        domain_name = '://'.join(urlsplit(self.endpoint or '', 'https')[:2])
-        model_endpoint = '%s/v1/models' % domain_name
+        endpoint = (self.endpoint or '').rstrip('/')
+        # Keep custom base paths such as OpenRouter's ``/api/v1`` instead of
+        # reducing every compatible endpoint to its scheme and hostname.
+        if endpoint.endswith('/chat/completions'):
+            model_endpoint = endpoint[:-len('/chat/completions')] + '/models'
+        else:
+            model_endpoint = endpoint + '/models'
         response = request(
             model_endpoint, headers=self.get_headers(),
             proxy_uri=self.proxy_uri)

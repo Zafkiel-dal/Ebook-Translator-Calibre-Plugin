@@ -9,21 +9,16 @@ on:
 permissions:
   contents: write
 
-env:
-  branch: master
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ env.branch }}
       - name: Build
         run: |
           file_name=Ebook-Translator-Calibre-Plugin_${{ github.ref_name }}.zip
-          git archive --format=zip --output=$file_name ${{ env.branch }}
+          git archive --format=zip --output=$file_name HEAD
       - name: Changelog
         run: |
           {

@@ -1,0 +1,7 @@
+/.github export-ignore
+/tests export-ignore
+/page export-ignore
+/test-artifacts export-ignore
+/LIVE_TEST_RESULTS.md export-ignore
+/test.py export-ignore
+/build_plugin.sh export-ignore

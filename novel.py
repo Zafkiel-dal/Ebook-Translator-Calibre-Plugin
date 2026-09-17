@@ -11,6 +11,7 @@ Only engines that inherit from ``engines.genai.GenAI`` are eligible.
 """
 import time
 import traceback
+import json
 from types import MethodType
 
 from qt.core import (  # type: ignore
@@ -19,7 +20,7 @@ from qt.core import (  # type: ignore
     QProgressBar, pyqtSignal, pyqtSlot, QPixmap, QListWidget,
     QListWidgetItem, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QSpacerItem, QStackedWidget, QComboBox, QMessageBox,
-    QSizePolicy, QColor)
+    QSizePolicy, QColor, QLineEdit, QCheckBox, QDoubleSpinBox, QFileDialog)
 from calibre.constants import __version__  # type: ignore
 from calibre.gui2 import I  # type: ignore
 from calibre.utils.localization import _  # type: ignore
@@ -30,7 +31,7 @@ from calibre.ptempfile import PersistentTemporaryFile  # type: ignore
 from . import EbookTranslator
 from .lib.utils import log, sep, uid, traceback_error
 from .lib.config import get_config
-from .lib.cache import get_cache
+from .lib.cache import TranslationCache, get_cache
 from .lib.element import (
     get_element_handler, get_page_elements, get_toc_elements,
     get_metadata_elements)
@@ -38,6 +39,8 @@ from .lib.translation import get_engine_class, get_translator
 from .lib.exception import TranslationCanceled, TranslationFailed
 from .lib.novel import (
     ChapterBuilder, ContextManager, NovelTranslator, novel_cache_id)
+from .lib.novel_memory import (
+    MemoryDescriptor, MemoryStore, build_memory_descriptor)
 from .lib.conversion import get_novel_config
 from .engines.genai import GenAI
 from .components import (
@@ -99,6 +102,28 @@ class NovelPreparationWorker(QObject):
         cache.set_info('plugin_version', EbookTranslator.__version__)
         cache.set_info('calibre_version', __version__)
         cache.set_info('novel_mode', '1')
+        # Persist the resolved descriptor before any worker runs. Subsequent
+        # resume sessions use this value even if Calibre metadata is edited.
+        raw_descriptor = cache.get_info('novel_memory_descriptor')
+        try:
+            descriptor = (MemoryDescriptor.from_json(raw_descriptor)
+                          if raw_descriptor else None)
+        except (TypeError, ValueError):
+            descriptor = None
+        if descriptor is None:
+            try:
+                descriptor = build_memory_descriptor(
+                    self.ebook.memory_metadata, self.ebook.source_lang,
+                    self.ebook.target_lang,
+                    series_enabled=bool(get_config().get(
+                        'novel_series_memory', True)))
+                cache.set_info(
+                    'novel_memory_descriptor',
+                    __import__('json').dumps(descriptor.to_json()))
+            except (TypeError, ValueError) as e:
+                self.progress_detail.emit(_(
+                    'Novel memory will remain book context only: {}').format(e))
+        self.ebook.memory_descriptor = descriptor
 
         chapters_meta = []
         if cache.is_fresh() or not cache.is_persistence():
@@ -288,9 +313,25 @@ class NovelTranslationWorker(QObject):
         ).load()
 
         novel_config = get_novel_config()
+        memory_store = None
+        descriptor = self.ebook.memory_descriptor
+        if descriptor is None:
+            raw_descriptor = cache.get_info('novel_memory_descriptor')
+            try:
+                descriptor = MemoryDescriptor.from_json(raw_descriptor)
+            except (TypeError, ValueError):
+                descriptor = None
+        if descriptor is not None:
+            try:
+                memory_store = MemoryStore(
+                    descriptor.database_path(TranslationCache.dir_path))
+            except Exception as e:
+                self.logging.emit(_('Novel memory unavailable: {}').format(e),
+                                  True)
 
         translator_novel = NovelTranslator(
-            translator, chapters, ctx, cache, config=novel_config)
+            translator, chapters, ctx, cache, config=novel_config,
+            memory_store=memory_store, memory_descriptor=descriptor)
         translator_novel.set_logging(
             lambda text, error=False: self.logging.emit(text, error))
         translator_novel.set_progress(
@@ -302,8 +343,12 @@ class NovelTranslationWorker(QObject):
             lambda chapter, summary, delta:
                 self.chapter_done.emit(chapter.index, summary, delta or []))
 
-        translator_novel.run()
-        cache.close()
+        try:
+            translator_novel.run()
+        finally:
+            if memory_store is not None:
+                memory_store.close()
+            cache.close()
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +448,49 @@ class CreateNovelProject(QDialog):
         change_target_lang(target_lang.currentText())
         target_lang.currentTextChanged.connect(change_target_lang)
 
+        memory_group = QGroupBox(_('Series Memory'))
+        memory_layout = QGridLayout(memory_group)
+        memory_enabled = QCheckBox(_(
+            'Share memory with earlier books in this series'))
+        memory_enabled.setChecked(bool(get_config().get(
+            'novel_series_memory', True)))
+        memory_enabled.setToolTip(_(
+            'Uses Calibre series metadata by default. A manual key and '
+            'order are only needed when the library metadata is missing or '
+            'incorrect.'))
+        memory_layout.addWidget(memory_enabled, 0, 0, 1, 2)
+
+        series_key = QLineEdit()
+        series_key.setPlaceholderText(
+            (self.ebook.memory_metadata.get('series') or
+             _('Use Calibre series metadata')))
+        series_key.setToolTip(_(
+            'Optional series key override. Books use the same memory only '
+            'when this key and their target language match.'))
+        memory_layout.addWidget(QLabel(_('Series key override')), 1, 0)
+        memory_layout.addWidget(series_key, 1, 1)
+
+        series_order = QDoubleSpinBox()
+        series_order.setRange(0, 1000000)
+        series_order.setDecimals(3)
+        series_order.setSingleStep(1)
+        raw_order = self.ebook.memory_metadata.get('series_index')
+        try:
+            series_order.setValue(float(raw_order or 0))
+        except (TypeError, ValueError):
+            series_order.setValue(0)
+        series_order.setSpecialValueText(_('Use Calibre series order'))
+        series_order.setToolTip(_(
+            'Optional book-order override. Set an explicit positive value '
+            'when Calibre does not have a trustworthy series index.'))
+        memory_layout.addWidget(QLabel(_('Book order override')), 2, 0)
+        memory_layout.addWidget(series_order, 2, 1)
+        layout.addWidget(memory_group, 3, 0, 1, 6)
+
+        self.memory_enabled = memory_enabled
+        self.series_key_override = series_key
+        self.series_order_override = series_order
+
         return widget
 
     @pyqtSlot()
@@ -412,6 +500,12 @@ class CreateNovelProject(QDialog):
                 'Please select a GenAI engine before starting novel mode.'),
                 'warning')
             return
+        metadata = self.ebook.memory_metadata
+        metadata['series_memory_enabled'] = self.memory_enabled.isChecked()
+        metadata['series_key_override'] = (
+            self.series_key_override.text().strip())
+        order = self.series_order_override.value()
+        metadata['series_order_override'] = order if order > 0 else None
         self.done(0)
         self.start_translation.emit(self.ebook)
 
@@ -436,9 +530,6 @@ class NovelTranslation(QDialog):
     STATUS_DONE = 2
     STATUS_ERROR = 3
 
-    prep_thread = QThread()
-    trans_thread = QThread()
-
     def __init__(self, plugin, parent, worker, ebook):
         QDialog.__init__(self, parent)
         self.ui_settings = plugin.ui_settings
@@ -456,6 +547,10 @@ class NovelTranslation(QDialog):
         self.chapter_items = {}   # index -> QListWidgetItem
         self.status_by_chapter = {}
         self.output_ready = False
+        self.translation_running = False
+        self.output_build_running = False
+        self.prep_thread = QThread(self)
+        self.trans_thread = QThread(self)
 
         self.prep_worker = NovelPreparationWorker(
             self.current_engine, self.ebook)
@@ -609,17 +704,23 @@ class NovelTranslation(QDialog):
             QHeaderView.ResizeMode.Stretch)
         self.tabs.addTab(self.glossary_table, _('Glossary'))
         glossary_actions = QHBoxLayout()
-        save_glossary_btn = QPushButton(_('Save edits'))
-        save_glossary_btn.clicked.connect(self._save_glossary_edits)
-        reset_glossary_btn = QPushButton(_('Reset context'))
-        reset_glossary_btn.clicked.connect(self._reset_context)
-        glossary_actions.addWidget(save_glossary_btn)
-        glossary_actions.addWidget(reset_glossary_btn)
+        self.save_glossary_button = QPushButton(_('Save edits'))
+        self.save_glossary_button.clicked.connect(self._save_glossary_edits)
+        self.reset_context_button = QPushButton(_('Reset context'))
+        self.reset_context_button.clicked.connect(self._reset_context)
+        glossary_actions.addWidget(self.save_glossary_button)
+        glossary_actions.addWidget(self.reset_context_button)
         glossary_actions.addStretch(1)
         glossary_wrap = QWidget()
         glossary_wrap_layout = QVBoxLayout(glossary_wrap)
         glossary_wrap_layout.setContentsMargins(0, 0, 0, 0)
         glossary_wrap_layout.addWidget(self.glossary_table, 1)
+        self.glossary_empty_label = QLabel(_(
+            'No glossary terms yet. Terms appear after a chapter is fully '\
+            'translated and its memory extraction finishes.'))
+        self.glossary_empty_label.setWordWrap(True)
+        self.glossary_empty_label.setAlignment(Qt.AlignCenter)
+        glossary_wrap_layout.addWidget(self.glossary_empty_label)
         glossary_wrap_layout.addLayout(glossary_actions)
         # Replace the tab widget with the wrapper.
         self.tabs.removeTab(1)
@@ -649,11 +750,14 @@ class NovelTranslation(QDialog):
         self.output_button = QPushButton(_('Build translated ebook'))
         self.output_button.setEnabled(False)
         self.output_button.clicked.connect(self._on_build_output)
+        self.memory_button = QPushButton(_('Manage memory'))
+        self.memory_button.clicked.connect(self._show_memory)
         self.close_button = QPushButton(_('Close'))
         self.close_button.clicked.connect(lambda: self.done(0))
         btn_row.addWidget(self.start_button)
         btn_row.addWidget(self.cancel_button)
         btn_row.addStretch(1)
+        btn_row.addWidget(self.memory_button)
         btn_row.addWidget(self.output_button)
         btn_row.addWidget(self.close_button)
         outer.addLayout(btn_row)
@@ -786,6 +890,7 @@ class NovelTranslation(QDialog):
         """Repopulate the glossary QTableWidget from ``self._ui_glossary``."""
         glossary = self._ui_glossary
         self.glossary_table.setRowCount(len(glossary))
+        self.glossary_empty_label.setVisible(not bool(glossary))
         for row, (source, entry) in enumerate(glossary.items()):
             self.glossary_table.setItem(
                 row, 0, QTableWidgetItem(source))
@@ -810,6 +915,9 @@ class NovelTranslation(QDialog):
         self._start_translation_worker()
 
     def _start_translation_worker(self):
+        if self.translation_running:
+            self.alert.pop(_('Novel translation is already running.'), 'warning')
+            return
         # Terminate any previous worker: disconnect its signals so we don't
         # accidentally receive events for it after we start a new one.
         if self.trans_worker is not None:
@@ -836,10 +944,19 @@ class NovelTranslation(QDialog):
             lambda idx: self._set_chapter_status(idx, self.STATUS_RUNNING))
         self.trans_worker.chapter_done.connect(self._on_chapter_done)
         self.trans_worker.finished.connect(self._on_worker_finished)
-        self.start_button.setEnabled(False)
+        self.translation_running = True
+        self._set_translation_controls(True)
         self.cancel_button.setEnabled(True)
-        self.output_button.setEnabled(False)
         self.trans_worker.start.emit()
+
+    def _set_translation_controls(self, running):
+        self.start_button.setEnabled(not running)
+        self.output_button.setEnabled(not running and self.output_button.isEnabled())
+        self.memory_button.setEnabled(not running)
+        self.save_glossary_button.setEnabled(not running)
+        self.reset_context_button.setEnabled(not running)
+        self.glossary_table.setEnabled(not running)
+        self.close_button.setEnabled(not running)
 
     def _on_cancel(self):
         if self.trans_worker is None:
@@ -847,6 +964,14 @@ class NovelTranslation(QDialog):
         self.trans_worker.set_canceled(True)
         self.cancel_button.setEnabled(False)
         self.progress_label.setText(_('Cancel requested...'))
+
+    def reject(self):
+        if self.translation_running:
+            self.alert.pop(_(
+                'Translation is still running. Cancel it and wait for the '
+                'worker to finish before closing this window.'), 'warning')
+            return
+        super().reject()
 
     def _on_log(self, text, is_error):
         prefix = '[ERROR] ' if is_error else ''
@@ -882,7 +1007,8 @@ class NovelTranslation(QDialog):
         self._refresh_context_views()
 
     def _on_worker_finished(self, success, message):
-        self.start_button.setEnabled(True)
+        self.translation_running = False
+        self._set_translation_controls(False)
         self.cancel_button.setEnabled(False)
         self.progress_label.setText(message)
         # Any chapter still marked "running" is now uncertain: leave as-is.
@@ -922,10 +1048,131 @@ class NovelTranslation(QDialog):
             cache.set_info(
                 'novel_glossary',
                 _json.dumps(new_glossary, ensure_ascii=False))
+            raw_descriptor = cache.get_info('novel_memory_descriptor')
+            try:
+                descriptor = MemoryDescriptor.from_json(raw_descriptor)
+            except (TypeError, ValueError):
+                descriptor = None
+            if descriptor is not None:
+                store = MemoryStore(
+                    descriptor.database_path(TranslationCache.dir_path))
+                try:
+                    for source, entry in new_glossary.items():
+                        term_id = store.create_term(
+                            descriptor, source, entry.get('type'))
+                        store.lock_term_name(
+                            descriptor, term_id, entry['translation'], source)
+                finally:
+                    store.close()
         finally:
             cache.close()
         self._ui_glossary = new_glossary
         self.alert.pop(_('Glossary saved.'))
+
+    def _show_memory(self):
+        """Provide a compact read-only audit view without redesigning tabs."""
+        cache = get_cache(self.cache_id)
+        try:
+            descriptor = MemoryDescriptor.from_json(
+                cache.get_info('novel_memory_descriptor'))
+        except (TypeError, ValueError):
+            cache.close()
+            self.alert.pop(_('No memory store is available for this project.'),
+                           'warning')
+            return
+        cache.close()
+        store = MemoryStore(descriptor.database_path(TranslationCache.dir_path))
+        try:
+            from .lib.novel_memory import MemoryQueryAdapter
+            adapter = MemoryQueryAdapter(store, descriptor)
+            dialog = QDialog(self)
+            dialog.setWindowTitle(_('Novel memory'))
+            dialog.resize(760, 480)
+            layout = QVBoxLayout(dialog)
+            table = QTableWidget()
+            entities = adapter.get_entities()
+            table.setColumnCount(4)
+            table.setHorizontalHeaderLabels(
+                [_('Entity'), _('Translation'), _('Aliases'), _('Facts')])
+            table.setRowCount(len(entities))
+            for row, entity in enumerate(entities):
+                table.setItem(row, 0, QTableWidgetItem(
+                    entity.get('canonical_source', '')))
+                table.setItem(row, 1, QTableWidgetItem(
+                    entity.get('canonical_target', '')))
+                table.setItem(row, 2, QTableWidgetItem(', '.join(
+                    entity.get('aliases', ()))))
+                table.setItem(row, 3, QTableWidgetItem(', '.join(
+                    '{}={}'.format(key, value)
+                    for key, value in sorted(entity.get('facts', {}).items()))))
+            table.horizontalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Stretch)
+            layout.addWidget(table)
+            note = QLabel(_(
+                'Glossary edits are saved as locked translations. Memory is '
+                'append-only; use the database audit data for advanced '
+                'entity/fact corrections.'))
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            close = QPushButton(_('Close'))
+            close.clicked.connect(dialog.accept)
+            export_button = QPushButton(_('Export memory snapshot'))
+            export_button.clicked.connect(
+                lambda: self._export_memory_snapshot(descriptor, store, dialog))
+            import_button = QPushButton(_('Import memory snapshot'))
+            import_button.clicked.connect(
+                lambda: self._import_memory_snapshot(descriptor, store, dialog))
+            actions = QHBoxLayout()
+            actions.addWidget(export_button)
+            actions.addWidget(import_button)
+            actions.addStretch(1)
+            actions.addWidget(close)
+            layout.addLayout(actions)
+            dialog.exec()
+        finally:
+            store.close()
+
+    def _export_memory_snapshot(self, descriptor, store, parent):
+        path, _filter = QFileDialog.getSaveFileName(
+            parent, _('Export Memory Snapshot'),
+            'novel-memory-snapshot.json', _('JSON files (*.json)'))
+        if not path:
+            return
+        try:
+            payload = store.export_snapshot(descriptor)
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            self.alert.pop(_('Memory snapshot exported.'))
+        except Exception as e:
+            self.alert.pop(_('Could not export memory snapshot: {}').format(e),
+                           'error')
+
+    def _import_memory_snapshot(self, descriptor, store, parent):
+        path, _filter = QFileDialog.getOpenFileName(
+            parent, _('Import Memory Snapshot'), '', _('JSON files (*.json)'))
+        if not path:
+            return
+        try:
+            with open(path, encoding='utf-8') as handle:
+                payload = json.load(handle)
+            result = store.import_snapshot(descriptor, payload)
+            for term in (payload.get('data') or {}).get('terms', ()) or ():
+                if not isinstance(term, dict):
+                    continue
+                source = (term.get('source') or '').strip()
+                target = (term.get('target') or '').strip()
+                if source and target:
+                    self._ui_glossary[source] = {
+                        'translation': target,
+                        'type': term.get('type') or 'imported',
+                        'notes': _('Imported memory snapshot'),
+                    }
+            self._redraw_glossary_table()
+            self.alert.pop(_('Imported {} entities and {} terms.').format(
+                result['entities'], result['terms']))
+        except Exception as e:
+            self.alert.pop(_('Could not import memory snapshot: {}').format(e),
+                           'error')
 
     def _reset_context(self):
         ret = QMessageBox.question(
@@ -951,12 +1198,18 @@ class NovelTranslation(QDialog):
     # -- final ebook build -------------------------------------------------
 
     def _on_build_output(self):
+        if self.output_build_running:
+            self.alert.pop(_('A translated ebook build is already running.'),
+                           'warning')
+            return
         # Reuse ConversionWorker.translate_ebook_novel with cache_only=True:
         # the cache is already fully populated by the interactive pipeline,
         # so this will just re-emit the DOM through Plumber. Uses a
         # dedicated ``convert_item_novel`` entry point (see lib/conversion.py)
         # to avoid colliding with the classic pipeline's argument layout.
         try:
+            self.output_build_running = True
+            self.output_button.setEnabled(False)
             self.ebook.set_output_format(
                 self.ebook.output_format or 'epub')
             self.worker.translate_ebook_novel(
@@ -965,5 +1218,7 @@ class NovelTranslation(QDialog):
                 'Building translated ebook in background. Watch the '
                 'jobs panel for progress.'))
         except Exception as e:
+            self.output_build_running = False
+            self.output_button.setEnabled(True)
             self.alert.pop(
                 _('Failed to launch build job: {}').format(e), 'error')

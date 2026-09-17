@@ -248,6 +248,13 @@ class EbookTranslatorGui(InterfaceAction):
         ebooks = Ebooks()
         db = self.gui.current_db
         api = db.new_api
+        # library_id remains stable when the local Calibre library moves.
+        library_identity = getattr(api, 'library_id', None)
+        if not library_identity:
+            library_identity = getattr(api, 'server_library_id', None)
+        if not library_identity:
+            backend = getattr(api, 'backend', None)
+            library_identity = getattr(backend, 'library_path', None)
         rows = self.gui.library_view.selectionModel().selectedRows()
         model = self.gui.library_view.model()
         for row in rows:
@@ -278,5 +285,12 @@ class EbookTranslatorGui(InterfaceAction):
                 fmt.lower(),  # Input format
                 book_metadata.language,  # Source language
                 extra_formats,
+                {
+                    'library_identity': library_identity or '',
+                    'book_uuid': getattr(book_metadata, 'uuid', '') or '',
+                    'series': getattr(book_metadata, 'series', '') or '',
+                    'series_index': getattr(
+                        book_metadata, 'series_index', None),
+                },
             )
         return ebooks
